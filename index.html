@@ -90,11 +90,13 @@
   const MR = 775.71911 * S;                // map area right
   const MT = (612 - 598.55871) * S;        // map area top (image y, down)
   const MB = (612 - 14.34243) * S;         // map area bottom
-  // GPTS pairs (lat, lon) for LPTS (0,1) (0,0) (1,0) (1,1) — TL, BL, BR, TR of bbox in PDF user space.
-  const TL = { lat: 27.83492, lon: -82.30454 };
-  const BL = { lat: 27.85714, lon: -82.30460 };
-  const BR = { lat: 27.85721, lon: -82.27198 };
-  const TR = { lat: 27.83499, lon: -82.27192 };
+  // GPTS pairs (lat, lon) for LPTS (0,1) (0,0) (1,0) (1,1).
+  // Esri's GeoPDF uses image-space convention for LPTS (0,0 = top-left of bbox),
+  // so the higher-latitude pairs correspond to the top of the page.
+  const TL = { lat: 27.85714, lon: -82.30460 };
+  const BL = { lat: 27.83492, lon: -82.30454 };
+  const BR = { lat: 27.83499, lon: -82.27192 };
+  const TR = { lat: 27.85721, lon: -82.27198 };
 
   // Affine fit: pixel = A * [lon, lat, 1]^T. Solve via two corner edges from TL.
   // Vec along top edge (TL->TR): pixel d = (MR-ML, 0); geo d = (TR.lon-TL.lon, TR.lat-TL.lat)
@@ -233,19 +235,18 @@
 
   // ---- Geolocation ----
   let lastFix = null;
+  let firstFixCentered = false;
   function placeMe(lat, lon, accuracyM) {
     const p = latLonToPx(lat, lon);
     meEl.style.transform = `translate(${p.x}px, ${p.y}px)`;
     meEl.hidden = false;
-    // accuracy circle radius in image px. Use meters-per-degree ~ at this latitude.
-    // 1 deg lat ~ 111111 m. Map spans ~0.0222 deg lat over ~(MB-MT) px.
-    const mPerPxLat = ((BL.lat - TL.lat) * 111111) / (MB - MT);
-    const mPerPxLon = ((TR.lon - TL.lon) * 111111 * Math.cos(lat * Math.PI/180)) / (MR - ML);
-    const mPerPx = (Math.abs(mPerPxLat) + Math.abs(mPerPxLon)) / 2;
+    // accuracy circle radius in image px.
+    const mPerPxLat = Math.abs((BL.lat - TL.lat) * 111111) / (MB - MT);
+    const mPerPxLon = Math.abs((TR.lon - TL.lon) * 111111 * Math.cos(lat * Math.PI/180)) / (MR - ML);
+    const mPerPx = (mPerPxLat + mPerPxLon) / 2;
     const r = Math.max(8, accuracyM / mPerPx);
     const acc = meEl.querySelector('.accuracy');
     acc.style.width = acc.style.height = (r * 2) + 'px';
-    // Out of bounds check
     const inside = p.u >= -0.02 && p.u <= 1.02 && p.v >= -0.02 && p.v <= 1.02;
     oob.classList.toggle('show', !inside);
     if (follow) centerOnImagePoint(p.x, p.y);
@@ -256,9 +257,15 @@
     navigator.geolocation.watchPosition(pos => {
       const { latitude, longitude, accuracy } = pos.coords;
       lastFix = pos.coords;
-      statusEl.textContent = `${latitude.toFixed(5)}, ${longitude.toFixed(5)} · ±${Math.round(accuracy)} m`;
+      statusEl.textContent = `${latitude.toFixed(5)}, ${longitude.toFixed(5)} · ±${Math.round(accuracy)} m  ⧉`;
       placeMe(latitude, longitude, accuracy);
-      if (!follow) { follow = true; btnRecenter.classList.add('active'); centerOnImagePoint(latLonToPx(latitude, longitude).x, latLonToPx(latitude, longitude).y, Math.max(view.scale, 1.5)); }
+      if (!firstFixCentered) {
+        firstFixCentered = true;
+        follow = true;
+        btnRecenter.classList.add('active');
+        const p = latLonToPx(latitude, longitude);
+        centerOnImagePoint(p.x, p.y, Math.max(view.scale, 1.5));
+      }
     }, err => {
       statusEl.textContent = 'GPS: ' + (err.message || err.code);
     }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
@@ -266,17 +273,14 @@
 
   // ---- Heading ----
   let headingOn = false;
+  let gotHeadingEvent = false;
+  let headingTimeout = null;
   function setArrow(deg) {
-    // deg = device heading clockwise from true north (0..360)
-    // Compute pixel-space direction: rotate NORTH vector by +deg around (0,0) in screen-CW sense.
-    // In image coords (y down), CW rotation by α: (x,y) -> (x cos α - y sin α, x sin α + y cos α) is actually CCW in math
-    // but with y flipped on screen it APPEARS clockwise. So use that:
     const rad = deg * Math.PI / 180;
     const nx = NORTH_PX.x, ny = NORTH_PX.y;
     const hx = nx * Math.cos(rad) - ny * Math.sin(rad);
     const hy = nx * Math.sin(rad) + ny * Math.cos(rad);
-    const ang = Math.atan2(hy, hx) * 180 / Math.PI; // angle of heading vector, CW from screen east
-    // Arrow asset points UP by default (angle = -90° from east). Rotate by (ang + 90°) to align.
+    const ang = Math.atan2(hy, hx) * 180 / Math.PI;
     const arrow = meEl.querySelector('.arrow');
     arrow.style.transform = `translate(-50%, -50%) rotate(${ang + 90}deg)`;
     meEl.classList.remove('no-heading');
@@ -284,25 +288,61 @@
   function handleOrient(e) {
     let heading;
     if (typeof e.webkitCompassHeading === 'number') heading = e.webkitCompassHeading;
-    else if (e.alpha != null && e.absolute) heading = (360 - e.alpha) % 360;
     else if (e.alpha != null) heading = (360 - e.alpha) % 360;
     if (heading == null || isNaN(heading)) return;
+    if (!gotHeadingEvent) {
+      gotHeadingEvent = true;
+      btnHeading.textContent = 'Compass on';
+      btnHeading.classList.add('active');
+      if (headingTimeout) { clearTimeout(headingTimeout); headingTimeout = null; }
+    }
     setArrow(heading);
   }
   async function enableHeading() {
-    if (headingOn) return;
+    if (headingOn) { return; }
     try {
       if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
         const res = await DeviceOrientationEvent.requestPermission();
         if (res !== 'granted') { btnHeading.textContent = 'Compass denied'; return; }
       }
-    } catch (_) {}
+    } catch (err) {
+      btnHeading.textContent = 'Compass error';
+      return;
+    }
+    if (typeof DeviceOrientationEvent === 'undefined') {
+      btnHeading.textContent = 'No compass';
+      return;
+    }
     window.addEventListener('deviceorientationabsolute', handleOrient, true);
     window.addEventListener('deviceorientation', handleOrient, true);
     headingOn = true;
-    btnHeading.textContent = 'Compass on';
-    btnHeading.classList.add('active');
+    btnHeading.textContent = 'Waiting…';
+    headingTimeout = setTimeout(() => {
+      if (!gotHeadingEvent) btnHeading.textContent = 'No compass data';
+    }, 3000);
   }
+
+  // ---- Tap status pill to copy coords ----
+  async function copyCoords() {
+    if (!lastFix) return;
+    const text = `${lastFix.latitude.toFixed(6)}, ${lastFix.longitude.toFixed(6)}`;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      ta.remove();
+    }
+    const prev = statusEl.textContent;
+    statusEl.textContent = ok ? 'Copied ' + text : 'Copy failed';
+    setTimeout(() => { if (lastFix) statusEl.textContent = `${lastFix.latitude.toFixed(5)}, ${lastFix.longitude.toFixed(5)} · ±${Math.round(lastFix.accuracy)} m  ⧉`; }, 1400);
+  }
+  statusEl.addEventListener('click', copyCoords);
+  statusEl.style.cursor = 'pointer';
 
   // ---- Init ----
   meEl.classList.add('no-heading');
