@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#1c1c1e">
+<title>Bell Creek Nature Preserve — You Are Here</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #111; color: #eee; font: 14px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #stage { position: fixed; inset: 0; overflow: hidden; touch-action: none; cursor: grab; }
+  #stage.dragging { cursor: grabbing; }
+  #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+  #map { display: block; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+  #me { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); pointer-events: none; }
+  #me .accuracy { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border-radius: 50%; background: rgba(10,132,255,0.18); border: 1px solid rgba(10,132,255,0.5); }
+  #me .arrow { position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px; transform-origin: 50% 50%; transition: transform 0.12s linear; }
+  #me .dot { position: absolute; left: 50%; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; background: #0a84ff; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,0.2), 0 2px 6px rgba(0,0,0,0.4); }
+  #me.no-heading .arrow { display: none; }
+  #toolbar { position: fixed; top: env(safe-area-inset-top, 8px); left: 8px; right: 8px; display: flex; gap: 8px; pointer-events: none; z-index: 10; }
+  #toolbar > * { pointer-events: auto; }
+  .pill { background: rgba(28,28,30,0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-radius: 999px; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.08); font-size: 12px; }
+  #status { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  button.pill { color: #fff; cursor: pointer; font-weight: 500; }
+  button.pill:active { background: rgba(58,58,60,0.85); }
+  #controls { position: fixed; bottom: calc(env(safe-area-inset-bottom, 8px) + 8px); right: 8px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
+  #controls button { width: 48px; height: 48px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); background: rgba(28,28,30,0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); color: #fff; font-size: 22px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  #controls button:active { background: rgba(58,58,60,0.85); }
+  #controls button.active { background: #0a84ff; border-color: #0a84ff; }
+  #splash { position: fixed; inset: 0; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; z-index: 20; }
+  #splash h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  #splash p { margin: 0; color: #aaa; max-width: 360px; font-size: 13px; }
+  #splash button { background: #0a84ff; color: #fff; border: 0; border-radius: 12px; padding: 14px 24px; font-size: 16px; font-weight: 600; cursor: pointer; }
+  #splash .small { color: #888; font-size: 11px; max-width: 320px; }
+  #outOfBounds { position: fixed; bottom: calc(env(safe-area-inset-bottom, 8px) + 8px); left: 8px; max-width: calc(100% - 80px); display: none; }
+  #outOfBounds.show { display: block; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="world">
+    <img id="map" src="map.webp" alt="Bell Creek Nature Preserve Trail Map" draggable="false">
+    <div id="me" hidden>
+      <div class="accuracy"></div>
+      <svg class="arrow" viewBox="0 0 56 56" aria-hidden="true">
+        <defs>
+          <filter id="sh" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur in="SourceAlpha" stdDeviation="1"/>
+            <feOffset dy="1" result="o"/>
+            <feComponentTransfer><feFuncA type="linear" slope="0.5"/></feComponentTransfer>
+            <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <path d="M28 4 L40 28 L28 22 L16 28 Z" fill="#0a84ff" stroke="#fff" stroke-width="2" stroke-linejoin="round" filter="url(#sh)"/>
+      </svg>
+    </div>
+  </div>
+</div>
+
+<div id="toolbar">
+  <div class="pill" id="status">Locating…</div>
+  <button class="pill" id="btnHeading" title="Enable compass">Compass</button>
+</div>
+
+<div class="pill" id="outOfBounds">You are outside the mapped preserve area.</div>
+
+<div id="controls">
+  <button id="btnRecenter" title="Recenter on me">⊕</button>
+  <button id="btnFit" title="Fit map to screen">⛶</button>
+</div>
+
+<div id="splash">
+  <h1>Bell Creek Nature Preserve</h1>
+  <p>This app shows your location and heading on the preserve trail map. It needs permission to use your device's GPS and compass.</p>
+  <button id="btnStart">Show my location</button>
+  <p class="small">All processing happens on your device. Nothing is sent anywhere.</p>
+</div>
+
+<script>
+(() => {
+  // ---- Georeference (from GeoPDF embedded VP / Measure / GPTS) ----
+  // PDF page: 1008 x 612 pts. Viewport BBox (PDF user space, y-up):
+  //   left=13.44068  right=775.71911  top=598.55871  bottom=14.34243
+  // Image rendered at 150 DPI -> 2100 x 1275, scale = 2100/1008
+  const IMG_W = 2100, IMG_H = 1275;
+  const S = IMG_W / 1008;
+  const ML = 13.44068 * S;                 // map area left in image px
+  const MR = 775.71911 * S;                // map area right
+  const MT = (612 - 598.55871) * S;        // map area top (image y, down)
+  const MB = (612 - 14.34243) * S;         // map area bottom
+  // GPTS pairs (lat, lon) for LPTS (0,1) (0,0) (1,0) (1,1) — TL, BL, BR, TR of bbox in PDF user space.
+  const TL = { lat: 27.83492, lon: -82.30454 };
+  const BL = { lat: 27.85714, lon: -82.30460 };
+  const BR = { lat: 27.85721, lon: -82.27198 };
+  const TR = { lat: 27.83499, lon: -82.27192 };
+
+  // Affine fit: pixel = A * [lon, lat, 1]^T. Solve via two corner edges from TL.
+  // Vec along top edge (TL->TR): pixel d = (MR-ML, 0); geo d = (TR.lon-TL.lon, TR.lat-TL.lat)
+  // Vec along left edge (TL->BL): pixel d = (0, MB-MT); geo d = (BL.lon-TL.lon, BL.lat-TL.lat)
+  const dxLon = TR.lon - TL.lon, dxLat = TR.lat - TL.lat;
+  const dyLon = BL.lon - TL.lon, dyLat = BL.lat - TL.lat;
+  // [px - MLx]   [dxLon dyLon] [u]      where u,v are local fractions (u along top, v along left)
+  // [py - MTy] = [dxLat dyLat] [v]   -> not quite; do it properly:
+  // px = ML + u*(MR-ML);  py = MT + v*(MB-MT)
+  // lon = TL.lon + u*dxLon + v*dyLon
+  // lat = TL.lat + u*dxLat + v*dyLat
+  // Inverse: solve for u,v given lon,lat.
+  const det = dxLon * dyLat - dxLat * dyLon;
+  const Wx = MR - ML, Wy = MB - MT;
+  function latLonToPx(lat, lon) {
+    const dLon = lon - TL.lon, dLat = lat - TL.lat;
+    const u = (dLon * dyLat - dLat * dyLon) / det;
+    const v = (dxLon * dLat - dxLat * dLon) / det;
+    return { x: ML + u * Wx, y: MT + v * Wy, u, v };
+  }
+  // North direction in image-pixel space: derivative of (px,py) w.r.t. lat.
+  // u = (-dyLon * dLat) / det  (when dLon=0); v = (dxLon * dLat) / det
+  // dpx/dlat = (-dyLon/det)*Wx;  dpy/dlat = (dxLon/det)*Wy
+  const NORTH_PX = { x: (-dyLon / det) * Wx, y: (dxLon / det) * Wy };
+  const NORTH_ANGLE_DEG = Math.atan2(NORTH_PX.y, NORTH_PX.x) * 180 / Math.PI; // CW from screen +x
+
+  // ---- Viewport state (pan/zoom over the world) ----
+  const stage = document.getElementById('stage');
+  const world = document.getElementById('world');
+  const mapEl = document.getElementById('map');
+  const meEl = document.getElementById('me');
+  const statusEl = document.getElementById('status');
+  const btnRecenter = document.getElementById('btnRecenter');
+  const btnFit = document.getElementById('btnFit');
+  const btnHeading = document.getElementById('btnHeading');
+  const splash = document.getElementById('splash');
+  const oob = document.getElementById('outOfBounds');
+
+  let view = { tx: 0, ty: 0, scale: 1 };
+  let minScale = 0.2, maxScale = 6;
+  let follow = false;
+
+  function applyView() {
+    world.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`;
+  }
+  function fitToScreen() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    const s = Math.min(w / IMG_W, h / IMG_H);
+    minScale = s * 0.5;
+    view.scale = s;
+    view.tx = (w - IMG_W * s) / 2;
+    view.ty = (h - IMG_H * s) / 2;
+    applyView();
+  }
+  function centerOnImagePoint(ix, iy, targetScale) {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    if (targetScale != null) view.scale = clamp(targetScale, minScale, maxScale);
+    view.tx = w / 2 - ix * view.scale;
+    view.ty = h / 2 - iy * view.scale;
+    applyView();
+  }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  // ---- Gesture handling ----
+  const pointers = new Map();
+  let lastTap = 0;
+  stage.addEventListener('pointerdown', e => {
+    stage.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    stage.classList.add('dragging');
+    follow = false; btnRecenter.classList.remove('active');
+    // double-tap to zoom
+    const now = Date.now();
+    if (pointers.size === 1 && now - lastTap < 280) {
+      const targetScale = view.scale < 1.5 ? 2.5 : minScale;
+      const ix = (e.clientX - view.tx) / view.scale;
+      const iy = (e.clientY - view.ty) / view.scale;
+      const ns = clamp(targetScale, minScale, maxScale);
+      view.tx = e.clientX - ix * ns;
+      view.ty = e.clientY - iy * ns;
+      view.scale = ns;
+      applyView();
+    }
+    lastTap = now;
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!pointers.has(e.pointerId)) return;
+    const prev = pointers.get(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 1) {
+      view.tx += e.clientX - prev.x;
+      view.ty += e.clientY - prev.y;
+      applyView();
+    } else if (pointers.size === 2) {
+      const pts = [...pointers.values()];
+      // Need previous distance/center to apply pinch. Track via dataset.
+      const prevDist = stage._prevDist;
+      const prevCenter = stage._prevCenter;
+      const dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
+      const dist = Math.hypot(dx, dy);
+      const cx = (pts[0].x + pts[1].x) / 2, cy = (pts[0].y + pts[1].y) / 2;
+      if (prevDist && prevCenter) {
+        const factor = dist / prevDist;
+        const ns = clamp(view.scale * factor, minScale, maxScale);
+        const realFactor = ns / view.scale;
+        // zoom around center
+        view.tx = cx - (cx - view.tx) * realFactor + (cx - prevCenter.x);
+        view.ty = cy - (cy - view.ty) * realFactor + (cy - prevCenter.y);
+        view.scale = ns;
+        applyView();
+      }
+      stage._prevDist = dist;
+      stage._prevCenter = { x: cx, y: cy };
+    }
+  });
+  function endPointer(e) {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) { stage._prevDist = null; stage._prevCenter = null; }
+    if (pointers.size === 0) stage.classList.remove('dragging');
+  }
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
+
+  stage.addEventListener('wheel', e => {
+    e.preventDefault();
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const ns = clamp(view.scale * factor, minScale, maxScale);
+    const realFactor = ns / view.scale;
+    view.tx = e.clientX - (e.clientX - view.tx) * realFactor;
+    view.ty = e.clientY - (e.clientY - view.ty) * realFactor;
+    view.scale = ns;
+    applyView();
+    follow = false; btnRecenter.classList.remove('active');
+  }, { passive: false });
+
+  // ---- Geolocation ----
+  let lastFix = null;
+  function placeMe(lat, lon, accuracyM) {
+    const p = latLonToPx(lat, lon);
+    meEl.style.transform = `translate(${p.x}px, ${p.y}px)`;
+    meEl.hidden = false;
+    // accuracy circle radius in image px. Use meters-per-degree ~ at this latitude.
+    // 1 deg lat ~ 111111 m. Map spans ~0.0222 deg lat over ~(MB-MT) px.
+    const mPerPxLat = ((BL.lat - TL.lat) * 111111) / (MB - MT);
+    const mPerPxLon = ((TR.lon - TL.lon) * 111111 * Math.cos(lat * Math.PI/180)) / (MR - ML);
+    const mPerPx = (Math.abs(mPerPxLat) + Math.abs(mPerPxLon)) / 2;
+    const r = Math.max(8, accuracyM / mPerPx);
+    const acc = meEl.querySelector('.accuracy');
+    acc.style.width = acc.style.height = (r * 2) + 'px';
+    // Out of bounds check
+    const inside = p.u >= -0.02 && p.u <= 1.02 && p.v >= -0.02 && p.v <= 1.02;
+    oob.classList.toggle('show', !inside);
+    if (follow) centerOnImagePoint(p.x, p.y);
+  }
+  function startGeo() {
+    if (!navigator.geolocation) { statusEl.textContent = 'Geolocation unsupported'; return; }
+    statusEl.textContent = 'Locating…';
+    navigator.geolocation.watchPosition(pos => {
+      const { latitude, longitude, accuracy } = pos.coords;
+      lastFix = pos.coords;
+      statusEl.textContent = `${latitude.toFixed(5)}, ${longitude.toFixed(5)} · ±${Math.round(accuracy)} m`;
+      placeMe(latitude, longitude, accuracy);
+      if (!follow) { follow = true; btnRecenter.classList.add('active'); centerOnImagePoint(latLonToPx(latitude, longitude).x, latLonToPx(latitude, longitude).y, Math.max(view.scale, 1.5)); }
+    }, err => {
+      statusEl.textContent = 'GPS: ' + (err.message || err.code);
+    }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+  }
+
+  // ---- Heading ----
+  let headingOn = false;
+  function setArrow(deg) {
+    // deg = device heading clockwise from true north (0..360)
+    // Compute pixel-space direction: rotate NORTH vector by +deg around (0,0) in screen-CW sense.
+    // In image coords (y down), CW rotation by α: (x,y) -> (x cos α - y sin α, x sin α + y cos α) is actually CCW in math
+    // but with y flipped on screen it APPEARS clockwise. So use that:
+    const rad = deg * Math.PI / 180;
+    const nx = NORTH_PX.x, ny = NORTH_PX.y;
+    const hx = nx * Math.cos(rad) - ny * Math.sin(rad);
+    const hy = nx * Math.sin(rad) + ny * Math.cos(rad);
+    const ang = Math.atan2(hy, hx) * 180 / Math.PI; // angle of heading vector, CW from screen east
+    // Arrow asset points UP by default (angle = -90° from east). Rotate by (ang + 90°) to align.
+    const arrow = meEl.querySelector('.arrow');
+    arrow.style.transform = `translate(-50%, -50%) rotate(${ang + 90}deg)`;
+    meEl.classList.remove('no-heading');
+  }
+  function handleOrient(e) {
+    let heading;
+    if (typeof e.webkitCompassHeading === 'number') heading = e.webkitCompassHeading;
+    else if (e.alpha != null && e.absolute) heading = (360 - e.alpha) % 360;
+    else if (e.alpha != null) heading = (360 - e.alpha) % 360;
+    if (heading == null || isNaN(heading)) return;
+    setArrow(heading);
+  }
+  async function enableHeading() {
+    if (headingOn) return;
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const res = await DeviceOrientationEvent.requestPermission();
+        if (res !== 'granted') { btnHeading.textContent = 'Compass denied'; return; }
+      }
+    } catch (_) {}
+    window.addEventListener('deviceorientationabsolute', handleOrient, true);
+    window.addEventListener('deviceorientation', handleOrient, true);
+    headingOn = true;
+    btnHeading.textContent = 'Compass on';
+    btnHeading.classList.add('active');
+  }
+
+  // ---- Init ----
+  meEl.classList.add('no-heading');
+  function init() {
+    if (mapEl.complete) fitToScreen();
+    else mapEl.addEventListener('load', fitToScreen, { once: true });
+    window.addEventListener('resize', () => { /* keep current center, just clamp */ applyView(); });
+  }
+  init();
+
+  btnFit.addEventListener('click', () => { follow = false; btnRecenter.classList.remove('active'); fitToScreen(); });
+  btnRecenter.addEventListener('click', () => {
+    if (!lastFix) return;
+    follow = true; btnRecenter.classList.add('active');
+    const p = latLonToPx(lastFix.latitude, lastFix.longitude);
+    centerOnImagePoint(p.x, p.y, Math.max(view.scale, 2));
+  });
+  btnHeading.addEventListener('click', enableHeading);
+
+  document.getElementById('btnStart').addEventListener('click', async () => {
+    splash.style.display = 'none';
+    startGeo();
+    // Try to enable heading too; on iOS this requires the same user gesture.
+    enableHeading();
+  });
+})();
+</script>
+</body>
+</html>
